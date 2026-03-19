@@ -1,0 +1,6 @@
+main_prompt_path: prompts/main_prompt.txt
+rag_prompt_path: prompts/rag_prompt.txt
+weather_prompt_path: prompts/weather_prompt.txt
+photo_prompt_path: prompts/photo_prompt.txt
+photo_response_prompt_path: prompts/photo_response_prompt.txt
+school_song_prompt_path: prompts/school_song_prompt.txt

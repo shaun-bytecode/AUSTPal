@@ -1,0 +1,5 @@
+PHOTO_ROOT : "data/photo"
+IMAGE_EXTS : (".jpg", ".jpeg", ".png")
+
+MUSIC_PATH : "data/music/校歌.wav"
+LYRICS_PATH : "data/photo/校园标识/校歌-安徽理工大学.png"

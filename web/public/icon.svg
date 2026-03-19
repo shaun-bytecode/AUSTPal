@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00e87a"/>
+      <stop offset="100%" stop-color="#7c6bfc"/>
+    </linearGradient>
+  </defs>
+  <!-- Circle -->
+  <circle cx="32" cy="32" r="32" fill="url(#bg)"/>
+  <!-- Graduation cap: diamond top -->
+  <polygon points="32,13 54,25 32,33 10,25" fill="white"/>
+  <!-- Cap base -->
+  <rect x="21" y="28" width="22" height="10" rx="3" fill="white" opacity="0.85"/>
+  <!-- Tassel line -->
+  <line x1="54" y1="25" x2="54" y2="38" stroke="white" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Tassel ball -->
+  <circle cx="54" cy="41" r="3.5" fill="white" opacity="0.9"/>
+</svg>

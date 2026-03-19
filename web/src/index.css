@@ -1,0 +1,211 @@
+/* ─── Google Fonts ────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Nunito:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,500&family=Noto+Sans+SC:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design Tokens — Warm Scholarly (Claude-inspired) ───────────────────── */
+@layer base {
+  :root {
+    /* Light mode — warm cream */
+    --background:     33 25% 93%;       /* #F0EDE8 warm cream */
+    --foreground:     20 15% 9%;        /* #1C1917 warm near-black */
+    --card:           33 20% 97%;       /* #F8F5F1 lighter card */
+    --card-foreground:20 15% 9%;
+    --popover:        33 20% 97%;
+    --popover-foreground: 20 15% 9%;
+
+    --primary:        19 63% 47%;       /* #C4622D burnt orange */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary:      33 18% 89%;       /* #E8E2DA */
+    --secondary-foreground: 20 15% 9%;
+
+    --muted:          33 15% 89%;       /* #E6E0D9 */
+    --muted-foreground: 25 9% 47%;      /* #7A7068 warm gray */
+
+    --accent:         33 18% 89%;
+    --accent-foreground: 20 15% 9%;
+
+    --destructive:    4 84% 56%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:         30 12% 83%;       /* #D6CFC6 */
+    --input:          30 12% 83%;
+    --ring:           19 63% 47%;
+    --radius:         0.75rem;
+
+    /* Bubble surfaces */
+    --bubble-bot-bg:     0 0% 100%;
+    --bubble-bot-border: 30 12% 87%;
+
+    /* Warm accent tokens */
+    --warm-solid:   #C4622D;
+    --warm-glow:    rgba(196, 98, 45, 0.15);
+    --warm-amber:   #A87D3C;
+  }
+
+  .dark {
+    /* Dark mode — slate neutral with warm accent */
+    --background:     222 14% 9%;       /* #13141C deep slate */
+    --foreground:     38 9% 94%;        /* #F1EDE8 warm white */
+    --card:           222 13% 13%;      /* #1C1E27 elevated slate */
+    --card-foreground:38 9% 94%;
+    --popover:        222 13% 14%;
+    --popover-foreground: 38 9% 94%;
+
+    --primary:        21 72% 57%;       /* #E07245 warm orange */
+    --primary-foreground: 222 14% 9%;
+
+    --secondary:      222 11% 18%;      /* #272A33 */
+    --secondary-foreground: 38 9% 94%;
+
+    --muted:          222 11% 17%;      /* #252830 */
+    --muted-foreground: 222 7% 62%;     /* #969BAA readable slate-gray */
+
+    --accent:         222 11% 18%;
+    --accent-foreground: 38 9% 94%;
+
+    --destructive:    4 70% 50%;
+    --destructive-foreground: 38 9% 94%;
+
+    --border:         222 10% 22%;      /* #31343F */
+    --input:          222 10% 22%;
+    --ring:           21 72% 57%;
+
+    --bubble-bot-bg:     222 13% 16%;
+    --bubble-bot-border: 222 10% 22%;
+
+    --warm-solid:   #E07245;
+    --warm-glow:    rgba(224, 114, 69, 0.15);
+    --warm-amber:   #C4A265;
+  }
+}
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+@layer base {
+  * { @apply border-border; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    @apply bg-background text-foreground antialiased;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Outfit', system-ui, sans-serif;
+  }
+
+  ::-webkit-scrollbar { width: 3px; height: 3px; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { border-radius: 99px; background: hsl(var(--border)); }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.4); }
+}
+
+/* ─── Utilities ───────────────────────────────────────────────────────────── */
+@layer utilities {
+
+  /* Glass surfaces */
+  .glass {
+    background: hsl(var(--card) / 0.88);
+    @apply backdrop-blur-xl border border-black/5 dark:border-white/[0.06];
+  }
+  .glass-deep {
+    background: hsl(var(--card) / 0.95);
+    @apply backdrop-blur-2xl border;
+    border-color: hsl(var(--border));
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, var(--warm-solid) 0%, var(--warm-amber) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Warm gradient fill */
+  .gradient-bg {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary) / 0.75) 100%);
+  }
+
+  /* Warm glow effect */
+  .warm-glow {
+    box-shadow: 0 0 0 1px var(--warm-glow),
+                0 0 16px 0 var(--warm-glow),
+                0 4px 24px -4px rgba(196, 98, 45, 0.2);
+  }
+  .warm-glow-sm {
+    box-shadow: 0 0 0 1px var(--warm-glow),
+                0 0 8px 0 var(--warm-glow);
+  }
+
+  /* Bubble surfaces */
+  .bubble-bot {
+    background: hsl(var(--bubble-bot-bg));
+    border-color: hsl(var(--bubble-bot-border));
+  }
+
+  /* Chat background */
+  .chat-bg {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(ellipse at 15% 85%, hsl(var(--primary) / 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 85% 15%, hsl(var(--primary) / 0.03) 0%, transparent 50%);
+  }
+
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+  .font-display { font-family: 'Nunito', 'Noto Sans SC', system-ui, sans-serif; }
+}
+
+/* ─── Markdown ────────────────────────────────────────────────────────────── */
+.markdown-content {
+  font-family: 'Nunito', 'Noto Sans SC', system-ui, sans-serif;
+  font-size: 0.97rem;
+  line-height: 1.85;
+  word-break: break-word;
+}
+.markdown-content p { @apply mb-3 last:mb-0; }
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  font-family: 'Nunito', 'Noto Sans SC', system-ui, sans-serif;
+  @apply font-bold mt-5 mb-2 leading-snug;
+}
+.markdown-content h1 { @apply text-2xl; }
+.markdown-content h2 { @apply text-xl; }
+.markdown-content h3 { @apply text-[1.05rem]; }
+.markdown-content ul, .markdown-content ol { @apply pl-5 mb-3 space-y-1.5; }
+.markdown-content ul { @apply list-disc; }
+.markdown-content ol { @apply list-decimal; }
+
+/* Inline code — warm tinted */
+.markdown-content code:not(pre code) {
+  @apply px-1.5 py-0.5 rounded-md text-[0.8em] font-mono;
+  background: hsl(var(--primary) / 0.1);
+  color: var(--warm-solid);
+  border: 1px solid hsl(var(--primary) / 0.25);
+}
+.markdown-content pre { @apply rounded-xl overflow-hidden my-3; }
+
+/* Tables */
+.markdown-content table { @apply w-full border-collapse my-3 text-sm; }
+.markdown-content thead { background: hsl(var(--primary) / 0.08); }
+.markdown-content th { @apply px-3 py-2.5 text-left font-semibold border border-border; }
+.markdown-content td { @apply px-3 py-2 border border-border; }
+.markdown-content tbody tr:hover td { background: hsl(var(--muted) / 0.5); }
+
+/* Blockquote */
+.markdown-content blockquote {
+  @apply pl-4 my-3 italic py-2 rounded-r-lg;
+  border-left: 3px solid var(--warm-solid);
+  background: hsl(var(--primary) / 0.05);
+  color: hsl(var(--muted-foreground));
+}
+.markdown-content a { color: var(--warm-solid); @apply underline underline-offset-2 transition-colors; }
+.markdown-content strong { @apply font-bold text-foreground; }
+.markdown-content hr { @apply my-4 border-border; }

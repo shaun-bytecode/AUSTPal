@@ -1,0 +1,15 @@
+collection_name : agent
+persist_directory : rag/chroma_db
+k : 3
+# 数据目录
+MD_DIR : data/md
+PDF_DIR : data/pdf
+TXT_DIR : data/txt
+CSV_DIR : data/csv
+md5_hex_store: data/md5.txt
+allowed_file_types: ["md", "pdf", "txt", "csv"]
+
+chunk_size: 1000
+chunk_overlap: 100
+separators: ["\n\n", "\n", "。", "！", "？", "；", "，", " ", "",",",".","?","!",";"]
+
