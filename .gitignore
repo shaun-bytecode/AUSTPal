@@ -14,14 +14,18 @@ build/
 .env.local
 .env.*.local
 
+# 敏感配置（含密钥、密码，不上传）
+config/auth.yml
+config/mysql.yml
+
 # Vector DB
 rag/chroma_db/
 
 # Logs
 logs/
 
-# Data - 用户历史和大文件
-data/history/
+# Data - 知识库文档及媒体资源（本地保留，不上传）
+data/
 
 # Node / Frontend
 web/node_modules/

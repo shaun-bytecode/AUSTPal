@@ -7,6 +7,11 @@ def _load_yaml(path: str, encoding: str = "utf-8") -> dict:
         return yaml.safe_load(f)
 
 
+def load_config(path: str) -> dict:
+    """加载任意 YAML 配置文件（相对于项目根目录的路径）。"""
+    return _load_yaml(get_abs_path(path))
+
+
 rag_conf     = _load_yaml(get_abs_path("config/rag.yml"))
 chroma_conf  = _load_yaml(get_abs_path("config/chroma.yml"))
 prompts_conf = _load_yaml(get_abs_path("config/prompts.yml"))

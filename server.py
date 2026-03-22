@@ -10,18 +10,22 @@ import re
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 from urllib.parse import unquote
 
 import requests as _requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent.react_agent import ReactAgent
+from utils.auth import decode_token
 from utils.chat_history import FileChatMessageHistory
+from utils.user_service import get_user_info, login_user, register_user
 
 PROJECT_ROOT = Path(__file__).parent
 
@@ -35,13 +39,45 @@ app.add_middleware(
 )
 
 _agent = ReactAgent()
+_bearer = HTTPBearer()
+
+
+# ------------------------------------------------------------------ #
+# JWT 依赖：从 Authorization: Bearer <token> 中解析当前用户
+# ------------------------------------------------------------------ #
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> str:
+    """FastAPI 依赖项，返回当前登录的 user_id；token 无效则 401。"""
+    try:
+        return decode_token(credentials.credentials)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+# ------------------------------------------------------------------ #
+# 请求 / 响应模型
+# ------------------------------------------------------------------ #
+
+class RegisterRequest(BaseModel):
+    user_id: str
+    password: str
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    user_id: str
+    password: str
 
 
 class ChatRequest(BaseModel):
     query: str
-    user_id: str = "web_user"
     session_id: str
 
+
+# ------------------------------------------------------------------ #
+# 工具函数
+# ------------------------------------------------------------------ #
 
 def _patch_local_paths(text: str) -> str:
     return re.sub(
@@ -52,9 +88,66 @@ def _patch_local_paths(text: str) -> str:
     )
 
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    """SSE 流式对话接口。每个事件格式：data: {"content": "..."}\n\n"""
+# ------------------------------------------------------------------ #
+# 认证接口
+# ------------------------------------------------------------------ #
+
+@app.post("/auth/register", summary="注册")
+async def register(request: RegisterRequest):
+    """
+    注册新用户。
+
+    - `user_id`：登录账号，3~64 字符
+    - `password`：密码，不少于 6 位
+    - `display_name`：可选显示名称
+    - `email`：可选邮箱
+    """
+    try:
+        result = register_user(
+            user_id=request.user_id,
+            password=request.password,
+            display_name=request.display_name,
+            email=request.email,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "注册成功", **result}
+
+
+@app.post("/auth/login", summary="登录")
+async def login(request: LoginRequest):
+    """
+    登录，成功返回 JWT access_token。
+
+    前端将 token 存入 localStorage，后续请求在 Header 中携带：
+    `Authorization: Bearer <token>`
+    """
+    try:
+        result = login_user(user_id=request.user_id, password=request.password)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    return result
+
+
+@app.get("/auth/me", summary="获取当前用户信息")
+async def me(current_user: str = Depends(get_current_user)):
+    """返回当前登录用户的基本信息（需携带 token）。"""
+    try:
+        return get_user_info(current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ------------------------------------------------------------------ #
+# 对话接口（需登录）
+# ------------------------------------------------------------------ #
+
+@app.post("/chat", summary="流式对话")
+async def chat(
+    request: ChatRequest,
+    current_user: str = Depends(get_current_user),
+):
+    """SSE 流式对话接口。每个事件格式：data: {"type": "...", "content": "..."}\n\n"""
 
     import asyncio
 
@@ -65,7 +158,7 @@ async def chat(request: ChatRequest):
             try:
                 for item in _agent.execute_stream(
                     request.query,
-                    user_id=request.user_id,
+                    user_id=current_user,
                     session_id=request.session_id,
                     stream_thinking=True,
                 ):
@@ -103,28 +196,62 @@ async def chat(request: ChatRequest):
     )
 
 
-@app.get("/files/{path:path}")
+# ------------------------------------------------------------------ #
+# 历史记录接口（需登录，且只能访问自己的会话）
+# ------------------------------------------------------------------ #
+
+@app.get("/history", summary="列出当前用户所有会话")
+async def list_sessions(current_user: str = Depends(get_current_user)):
+    sessions = FileChatMessageHistory.list_sessions(current_user)
+    return {"sessions": sessions}
+
+
+@app.get("/history/{session_id}", summary="获取指定会话的完整消息")
+async def get_session(
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+):
+    data = FileChatMessageHistory.get_session_data(current_user, session_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # 历史 AI 消息中的本地路径需要与实时流保持一致
+    for msg in data.get("messages", []):
+        if msg.get("type") == "ai":
+            msg["content"] = _patch_local_paths(msg["content"])
+    return data
+
+
+@app.delete("/history/{session_id}", summary="删除指定会话")
+async def delete_session(
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+):
+    ok = FileChatMessageHistory.delete_session(current_user, session_id)
+    return {"deleted": ok}
+
+
+# ------------------------------------------------------------------ #
+# 媒体资源接口（无需登录）
+# ------------------------------------------------------------------ #
+
+@app.get("/files/{path:path}", summary="本地文件访问")
 async def serve_file(path: str):
     """提供项目本地文件访问（图片、音频等媒体资源）。"""
     file_path = (PROJECT_ROOT / path).resolve()
     root = PROJECT_ROOT.resolve()
-
-    # 安全检查：防止目录遍历
     try:
         file_path.relative_to(root)
     except ValueError:
         raise HTTPException(status_code=403, detail="Access denied")
-
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-
     return FileResponse(str(file_path))
 
 
 _REFERER_MAP = {
-    "baidu.com":  "https://image.baidu.com/",
-    "bing.com":   "https://cn.bing.com/",
-    "bing.net":   "https://cn.bing.com/",
+    "baidu.com": "https://image.baidu.com/",
+    "bing.com":  "https://cn.bing.com/",
+    "bing.net":  "https://cn.bing.com/",
 }
 
 _PROXY_HEADERS = {
@@ -137,7 +264,7 @@ _PROXY_HEADERS = {
 }
 
 
-@app.get("/proxy/image")
+@app.get("/proxy/image", summary="图片反向代理")
 async def proxy_image(url: str = Query(...)):
     """图片反向代理，携带正确 Referer 绕过防盗链。"""
     decoded = unquote(url)
@@ -160,32 +287,9 @@ async def proxy_image(url: str = Query(...)):
     return Response(content=resp.content, media_type=content_type)
 
 
-@app.get("/history/{user_id}")
-async def list_sessions(user_id: str):
-    """列出用户有实际文件的所有会话（按最后更新时间倒序）。"""
-    sessions = FileChatMessageHistory.list_sessions(user_id)
-    user_dir = PROJECT_ROOT / "data" / "history" / user_id
-    # 只返回文件实际存在的会话
-    existing = [s for s in sessions if (user_dir / f"{s['session_id']}.json").exists()]
-    return {"sessions": existing}
-
-
-@app.get("/history/{user_id}/{session_id}")
-async def get_session(user_id: str, session_id: str):
-    """获取指定会话的完整消息记录（直接读文件，不创建新文件）。"""
-    file_path = PROJECT_ROOT / "data" / "history" / user_id / f"{session_id}.json"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Session not found")
-    with open(file_path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-@app.delete("/history/{user_id}/{session_id}")
-async def delete_session(user_id: str, session_id: str):
-    """删除指定会话。"""
-    ok = FileChatMessageHistory.delete_session(user_id, session_id)
-    return {"deleted": ok}
-
+# ------------------------------------------------------------------ #
+# 健康检查
+# ------------------------------------------------------------------ #
 
 @app.get("/health")
 async def health():

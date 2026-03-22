@@ -1,11 +1,10 @@
 """
-FileChatMessageHistory — 基于文件的长期会话历史管理
+MySQLChatMessageHistory — 基于 MySQL 的长期会话历史管理
 
-目录结构：
-    data/history/
-    └── {user_id}/
-        ├── index.json              # 该用户所有会话的索引
-        └── {session_id}.json       # 单个会话的消息记录
+表结构见 sql/init.sql，对应关系：
+    users          → 用户
+    sessions       → 会话列表（原 index.json）
+    messages       → 消息记录（原 {session_id}.json）
 
 使用示例：
     history = FileChatMessageHistory(user_id="alice", session_id="session_001")
@@ -14,111 +13,73 @@ FileChatMessageHistory — 基于文件的长期会话历史管理
     print(history.messages)
 """
 
-import json
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from datetime import datetime, timedelta
 from typing import List, Optional
 
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
+from utils.db import get_conn
 from utils.logger_handler import logger
-from utils.path_tool import get_abs_path
 
 
-def _msg_to_dict(message: BaseMessage) -> dict:
+def _msg_to_role(message: BaseMessage) -> str:
     if isinstance(message, HumanMessage):
-        return {"type": "human", "content": message.content}
+        return "human"
     if isinstance(message, AIMessage):
-        return {"type": "ai", "content": message.content}
-    return {"type": type(message).__name__.lower(), "content": str(message.content)}
+        return "ai"
+    return "system"
 
 
-def _dict_to_msg(d: dict) -> BaseMessage:
-    if d["type"] == "human":
-        return HumanMessage(content=d["content"])
-    if d["type"] == "ai":
-        return AIMessage(content=d["content"])
-    # 未知类型降级为 HumanMessage，避免实例化抽象基类
-    logger.warning(f"[History] 未知消息类型 '{d['type']}'，降级为 HumanMessage")
-    return HumanMessage(content=d["content"])
-
-_DEFAULT_HISTORY_DIR = get_abs_path("data/history")
+def _row_to_msg(row: dict) -> BaseMessage:
+    role = row["role"]
+    content = row["content"]
+    if role == "human":
+        return HumanMessage(content=content)
+    if role == "ai":
+        return AIMessage(content=content)
+    logger.warning(f"[History] 未知消息角色 '{role}'，降级为 HumanMessage")
+    return HumanMessage(content=content)
 
 
 class FileChatMessageHistory(BaseChatMessageHistory):
-    """基于本地 JSON 文件的对话历史，按用户和会话号分隔存储。"""
+    """基于 MySQL 的对话历史，接口与原文件版本保持一致。"""
 
-    def __init__(
-        self,
-        user_id: str,
-        session_id: str,
-        history_dir: Optional[str] = None,
-    ) -> None:
+    def __init__(self, user_id: str, session_id: str, **_) -> None:
         self.user_id = user_id
         self.session_id = session_id
-        self.history_dir = history_dir or _DEFAULT_HISTORY_DIR
-
-        self._user_dir = os.path.join(self.history_dir, user_id)
-        self._session_file = os.path.join(self._user_dir, f"{session_id}.json")
-        self._index_file = os.path.join(self._user_dir, "index.json")
-
-        os.makedirs(self._user_dir, exist_ok=True)
-        self._ensure_session_file()
+        self._ensure_user()
+        self._ensure_session()
 
     # ------------------------------------------------------------------ #
     # 内部工具
     # ------------------------------------------------------------------ #
 
-    def _now(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _ensure_user(self) -> None:
+        """更新最后活跃时间（用户已通过 /auth/register 注册，必然存在于 users 表）。"""
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET last_active_at = NOW() WHERE user_id = %s",
+                    (self.user_id,),
+                )
+            conn.commit()
 
-    def _ensure_session_file(self) -> None:
-        """初次访问时创建会话文件并更新用户索引。"""
-        if not os.path.exists(self._session_file):
-            data = {
-                "user_id": self.user_id,
-                "session_id": self.session_id,
-                "created_at": self._now(),
-                "updated_at": self._now(),
-                "message_count": 0,
-                "messages": [],
-            }
-            self._write_session(data)
-            self._update_index(created=True)
-            logger.debug(
-                f"[History] 新建会话文件: user={self.user_id} session={self.session_id}"
-            )
-
-    def _read_session(self) -> dict:
-        with open(self._session_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    def _write_session(self, data: dict) -> None:
-        with open(self._session_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def _update_index(self, created: bool = False) -> None:
-        """刷新用户索引文件中的条目。"""
-        index = self._read_index()
-        entry = index.get(self.session_id, {})
-        if created:
-            entry["created_at"] = self._now()
-        entry["session_id"] = self.session_id
-        entry["updated_at"] = self._now()
-        entry["message_count"] = len(self.messages)
-        index[self.session_id] = entry
-        with open(self._index_file, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-
-    def _read_index(self) -> dict:
-        if not os.path.exists(self._index_file):
-            return {}
-        with open(self._index_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+    def _ensure_session(self) -> None:
+        """会话不存在时自动创建。"""
+        sql = """
+            INSERT INTO sessions (session_id, user_id, created_at, updated_at)
+            VALUES (%s, %s, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE session_id = session_id
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (self.session_id, self.user_id))
+            conn.commit()
+        logger.debug(f"[History] 确认会话: user={self.user_id} session={self.session_id}")
 
     # ------------------------------------------------------------------ #
     # BaseChatMessageHistory 接口
@@ -127,107 +88,57 @@ class FileChatMessageHistory(BaseChatMessageHistory):
     @property
     def messages(self) -> List[BaseMessage]:
         """返回当前会话的所有消息。"""
-        data = self._read_session()
-        return [_dict_to_msg(d) for d in data["messages"]]
+        sql = """
+            SELECT role, content
+            FROM messages
+            WHERE session_id = %s
+            ORDER BY created_at, id
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (self.session_id,))
+                rows = cur.fetchall()
+        return [_row_to_msg(r) for r in rows]
 
     def add_message(self, message: BaseMessage) -> None:
-        """追加一条消息并持久化。"""
-        data = self._read_session()
-        data["messages"].append(_msg_to_dict(message))
-        data["updated_at"] = self._now()
-        data["message_count"] = len(data["messages"])
-        self._write_session(data)
-        self._update_index()
+        """追加一条消息并更新会话统计。"""
+        role = _msg_to_role(message)
+        content = message.content if isinstance(message.content, str) else str(message.content)
+
+        insert_msg = """
+            INSERT INTO messages (session_id, role, content, created_at)
+            VALUES (%s, %s, %s, NOW())
+        """
+        update_session = """
+            UPDATE sessions
+            SET message_count = message_count + 1,
+                updated_at    = NOW(),
+                title         = CASE
+                                    WHEN title IS NULL AND %s = 'human'
+                                    THEN LEFT(%s, 20)
+                                    ELSE title
+                                END
+            WHERE session_id = %s
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(insert_msg, (self.session_id, role, content))
+                cur.execute(update_session, (role, content, self.session_id))
+            conn.commit()
         logger.debug(
-            f"[History] 追加消息: user={self.user_id} session={self.session_id} "
-            f"type={type(message).__name__} total={data['message_count']}"
+            f"[History] 追加消息: user={self.user_id} session={self.session_id} role={role}"
         )
 
     def clear(self) -> None:
-        """清空当前会话的所有消息（保留文件和元数据）。"""
-        data = self._read_session()
-        data["messages"] = []
-        data["updated_at"] = self._now()
-        data["message_count"] = 0
-        self._write_session(data)
-        self._update_index()
-        logger.info(
-            f"[History] 清空会话: user={self.user_id} session={self.session_id}"
-        )
-
-    # ------------------------------------------------------------------ #
-    # 会话管理静态方法
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def list_sessions(user_id: str, history_dir: Optional[str] = None) -> List[dict]:
-        """列出指定用户的所有会话，按最后更新时间倒序排列。"""
-        base = history_dir or _DEFAULT_HISTORY_DIR
-        index_file = os.path.join(base, user_id, "index.json")
-        if not os.path.exists(index_file):
-            return []
-        with open(index_file, "r", encoding="utf-8") as f:
-            index = json.load(f)
-        sessions = list(index.values())
-        sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
-        return sessions
-
-    @staticmethod
-    def delete_session(
-        user_id: str, session_id: str, history_dir: Optional[str] = None
-    ) -> bool:
-        """删除指定会话文件，并从用户索引中移除。返回是否成功删除。"""
-        base = history_dir or _DEFAULT_HISTORY_DIR
-        session_file = os.path.join(base, user_id, f"{session_id}.json")
-        index_file = os.path.join(base, user_id, "index.json")
-
-        deleted = False
-        if os.path.exists(session_file):
-            os.remove(session_file)
-            deleted = True
-
-        if os.path.exists(index_file):
-            with open(index_file, "r", encoding="utf-8") as f:
-                index = json.load(f)
-            index.pop(session_id, None)
-            with open(index_file, "w", encoding="utf-8") as f:
-                json.dump(index, f, ensure_ascii=False, indent=2)
-
-        if deleted:
-            logger.info(f"[History] 删除会话: user={user_id} session={session_id}")
-        return deleted
-
-    @staticmethod
-    def list_users(history_dir: Optional[str] = None) -> List[str]:
-        """列出所有有历史记录的用户 ID。"""
-        base = history_dir or _DEFAULT_HISTORY_DIR
-        if not os.path.exists(base):
-            return []
-        return [
-            name
-            for name in os.listdir(base)
-            if os.path.isdir(os.path.join(base, name))
-        ]
-
-    @staticmethod
-    def cleanup_old_sessions(days: int = 30, history_dir: Optional[str] = None) -> int:
-        """删除所有用户中超过 days 天未更新的会话，返回删除的会话总数。"""
-        base = history_dir or _DEFAULT_HISTORY_DIR
-        cutoff = datetime.now() - timedelta(days=days)
-        deleted = 0
-        for user_id in FileChatMessageHistory.list_users(base):
-            for session in FileChatMessageHistory.list_sessions(user_id, base):
-                updated_str = session.get("updated_at", "")
-                try:
-                    updated_at = datetime.strptime(updated_str, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    continue
-                if updated_at < cutoff:
-                    sid = session.get("session_id", "")
-                    if sid and FileChatMessageHistory.delete_session(user_id, sid, base):
-                        deleted += 1
-        logger.info(f"[History] cleanup_old_sessions: 删除 {deleted} 个过期会话（>{days}天）")
-        return deleted
+        """清空当前会话的所有消息（保留会话记录）。"""
+        delete_msgs = "DELETE FROM messages WHERE session_id = %s"
+        reset_session = "UPDATE sessions SET message_count = 0, updated_at = NOW() WHERE session_id = %s"
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(delete_msgs, (self.session_id,))
+                cur.execute(reset_session, (self.session_id,))
+            conn.commit()
+        logger.info(f"[History] 清空会话: user={self.user_id} session={self.session_id}")
 
     # ------------------------------------------------------------------ #
     # 便捷查询
@@ -235,22 +146,137 @@ class FileChatMessageHistory(BaseChatMessageHistory):
 
     def get_recent(self, n: int = 10) -> List[BaseMessage]:
         """返回最近 n 条消息。"""
-        return self.messages[-n:]
+        sql = """
+            SELECT role, content FROM (
+                SELECT role, content, created_at, id
+                FROM messages
+                WHERE session_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+            ) sub
+            ORDER BY created_at, id
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (self.session_id, n))
+                rows = cur.fetchall()
+        return [_row_to_msg(r) for r in rows]
 
     def session_info(self) -> dict:
         """返回当前会话的元数据（不含消息内容）。"""
-        data = self._read_session()
-        return {k: v for k, v in data.items() if k != "messages"}
+        sql = """
+            SELECT session_id, user_id, title, message_count,
+                   created_at, updated_at
+            FROM sessions
+            WHERE session_id = %s
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (self.session_id,))
+                row = cur.fetchone()
+        if not row:
+            return {}
+        return {k: str(v) if v is not None else None for k, v in row.items()}
+
+    # ------------------------------------------------------------------ #
+    # 静态管理方法（接口与原文件版本一致）
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def list_sessions(user_id: str, **_) -> List[dict]:
+        """列出指定用户的所有会话，按最后更新时间倒序。"""
+        sql = """
+            SELECT session_id, user_id, title, message_count,
+                   DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at,
+                   DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS updated_at
+            FROM sessions
+            WHERE user_id = %s AND is_deleted = 0
+            ORDER BY updated_at DESC
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                return cur.fetchall()
+
+    @staticmethod
+    def get_session_data(user_id: str, session_id: str) -> Optional[dict]:
+        """获取会话元数据及完整消息列表（供 API 直接返回）。"""
+        session_sql = """
+            SELECT session_id, user_id, title, message_count,
+                   DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created_at,
+                   DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS updated_at
+            FROM sessions
+            WHERE session_id = %s AND user_id = %s AND is_deleted = 0
+        """
+        messages_sql = """
+            SELECT role AS type, content
+            FROM messages
+            WHERE session_id = %s
+            ORDER BY created_at, id
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(session_sql, (session_id, user_id))
+                session = cur.fetchone()
+                if not session:
+                    return None
+                cur.execute(messages_sql, (session_id,))
+                msgs = cur.fetchall()
+
+        result = {k: str(v) if v is not None else None for k, v in session.items()}
+        result["messages"] = [dict(m) for m in msgs]
+        return result
+
+    @staticmethod
+    def delete_session(user_id: str, session_id: str, **_) -> bool:
+        """软删除指定会话。返回是否成功。"""
+        sql = """
+            UPDATE sessions
+            SET is_deleted = 1, updated_at = NOW()
+            WHERE session_id = %s AND user_id = %s AND is_deleted = 0
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (session_id, user_id))
+                affected = cur.rowcount
+            conn.commit()
+        if affected:
+            logger.info(f"[History] 删除会话: user={user_id} session={session_id}")
+        return affected > 0
+
+    @staticmethod
+    def list_users(**_) -> List[str]:
+        """列出所有有历史记录的用户 ID。"""
+        sql = "SELECT DISTINCT user_id FROM sessions WHERE is_deleted = 0"
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                return [row["user_id"] for row in cur.fetchall()]
+
+    @staticmethod
+    def cleanup_old_sessions(days: int = 30, **_) -> int:
+        """软删除所有超过 days 天未更新的会话，返回删除数量。"""
+        sql = """
+            UPDATE sessions
+            SET is_deleted = 1
+            WHERE is_deleted = 0
+              AND updated_at < NOW() - INTERVAL %s DAY
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (days,))
+                deleted = cur.rowcount
+            conn.commit()
+        logger.info(f"[History] cleanup_old_sessions: 删除 {deleted} 个过期会话（>{days}天）")
+        return deleted
 
 
 if __name__ == "__main__":
-    from langchain_core.messages import AIMessage, HumanMessage
-
     print("=" * 55)
-    print(">>> 测试 FileChatMessageHistory")
+    print(">>> 测试 MySQLChatMessageHistory")
 
     h = FileChatMessageHistory(user_id="test_user", session_id="demo_001")
-    h.clear()  # 确保干净状态
+    h.clear()
 
     h.add_user_message("安徽理工大学有几个学院？")
     h.add_ai_message("安徽理工大学目前设有 20 余个学院，涵盖理、工、管、文等学科。")

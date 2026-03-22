@@ -16,7 +16,7 @@ from agent.tools.rag_summarize import rag_summarize
 from agent.tools.get_weather import get_weather
 from agent.tools.play_school_song import play_school_song
 from agent.tools.show_photos import show_photos
-from agent.tools.middleware import monitor_tool, log_before_model, prompt_switch
+from agent.tools.middleware import monitor_tool, log_before_model, prompt_switch, set_current_session
 
 
 class AgentState(TypedDict):
@@ -97,6 +97,9 @@ class ReactAgent:
             history_window: 注入上下文的最近消息条数，默认 20。
             verbose: True 时额外输出模型的工具调用决策和思考过程，用于调试。
         """
+        # 绑定 session_id 到当前线程，供 monitor_tool 写 tool_calls 表
+        set_current_session(session_id)
+
         # 加载历史消息
         history: Optional[FileChatMessageHistory] = None
         history_messages: list = []

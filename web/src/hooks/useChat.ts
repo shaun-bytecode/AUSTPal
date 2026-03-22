@@ -1,8 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import { Conversation, Message } from "@/types/chat"
 import { generateId, truncate, TYPEWRITER_SPEED_MS } from "@/lib/utils"
-
-const USER_ID = "web_user"
+import { apiFetch } from "@/lib/api"
 
 function makeConversation(title: string): Conversation {
   return {
@@ -21,7 +20,6 @@ function sessionToConversation(session: {
   updated_at: string
   messages: { type: string; content: string }[]
 }): Conversation {
-  // 后端日期格式 "2026-03-19 00:31:46" → ISO 8601，避免浏览器解析歧义
   const toDate = (s: string) => new Date(s.replace(" ", "T"))
   const createdAt = toDate(session.created_at)
   const updatedAt = toDate(session.updated_at)
@@ -32,6 +30,7 @@ function sessionToConversation(session: {
     content: m.content,
     timestamp: new Date(updatedAt.getTime() - (session.messages.length - i) * 1000),
     isTyping: false,
+    thinkingDone: true,   // 历史消息已完成，跳过"思考中"状态
   }))
 
   const firstUser = session.messages.find((m) => m.type === "human")
@@ -45,43 +44,48 @@ function patchConv(id: string, update: (c: Conversation) => Conversation) {
   return (convs: Conversation[]) => convs.map((c) => (c.id === id ? update(c) : c))
 }
 
-export function useChat() {
-  const [conversations, setConversations] = useState<Conversation[]>([])
+export function useChat(token: string | null) {
+  const [conversations,        setConversations]        = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const isLoadingRef = useRef(false)
+  const [isLoading,            setIsLoading]            = useState(false)
+  const isLoadingRef   = useRef(false)
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
   }, [])
 
-  // 启动时从后端加载历史会话
+  // 登录后从后端加载历史会话
   useEffect(() => {
+    if (!token) {
+      setConversations([])
+      setActiveConversationId(null)
+      return
+    }
+
     async function loadHistory() {
       try {
-        const res = await fetch(`/api/history/${USER_ID}`)
+        const res = await apiFetch("/api/history")
         if (!res.ok) return
         const { sessions } = await res.json() as { sessions: { session_id: string; message_count: number }[] }
-        if (!sessions.length) return
+        if (!sessions?.length) return
 
         const convs = await Promise.all(
           sessions
             .filter((s) => s.message_count > 0)
             .map(async (s) => {
-              const r = await fetch(`/api/history/${USER_ID}/${s.session_id}`)
+              const r = await apiFetch(`/api/history/${s.session_id}`)
               if (!r.ok) return null
               return sessionToConversation(await r.json())
             })
         )
-
         setConversations(convs.filter((c): c is Conversation => c !== null))
       } catch (err) {
         console.error("[useChat] 加载历史记录失败：", err)
       }
     }
     loadHistory()
-  }, [])
+  }, [token])
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeConversationId) ?? null,
@@ -101,7 +105,6 @@ export function useChat() {
 
       let convId = activeConversationId
 
-      // Auto-create a conversation if none is active
       if (!convId) {
         const conv = makeConversation(truncate(content, 18))
         setConversations((prev) => [conv, ...prev])
@@ -129,23 +132,18 @@ export function useChat() {
       const assistantMsgId = generateId()
 
       try {
-        const response = await fetch("/api/chat", {
+        const response = await apiFetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: content,
-            user_id: "web_user",
-            session_id: convId,
-          }),
+          body: JSON.stringify({ query: content, session_id: convId }),
         })
 
         if (!response.ok || !response.body) {
           throw new Error(`HTTP ${response.status}`)
         }
 
-        const reader = response.body.getReader()
+        const reader  = response.body.getReader()
         const decoder = new TextDecoder()
-        let buffer = ""
+        let buffer    = ""
         let firstChunk = true
         let fullAnswer = ""
 
@@ -170,7 +168,6 @@ export function useChat() {
                 firstChunk = false
                 isLoadingRef.current = false
                 setIsLoading(false)
-                // 立即插入助手消息，开始流式显示推理过程
                 setConversations(patchConv(convId!, (c) => ({
                   ...c,
                   messages: [
@@ -190,7 +187,6 @@ export function useChat() {
                 if (type === "answer") fullAnswer += chunk
               } else {
                 if (type === "thinking") {
-                  // 实时追加推理内容
                   setConversations(patchConv(convId!, (c) => ({
                     ...c,
                     messages: c.messages.map((m) =>
@@ -204,12 +200,11 @@ export function useChat() {
                 }
               }
             } catch {
-              // Ignore malformed chunks
+              // ignore malformed chunks
             }
           }
         }
 
-        // 流结束：推理完毕，用打字机播放最终答案
         if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
         const finalContent = fullAnswer.trim() || "（未收到回答，请重试）"
         setConversations(patchConv(convId!, (c) => ({
@@ -238,7 +233,7 @@ export function useChat() {
             {
               id: assistantMsgId,
               role: "assistant" as const,
-              content: `> ⚠️ 连接后端服务失败：${errMsg}\n>\n> 请确保后端已在 \`localhost:8000\` 启动（运行 \`python server.py\`）。`,
+              content: `> ⚠️ 连接后端服务失败：${errMsg}\n>\n> 请确保后端已在 \`localhost:8000\` 启动。`,
               timestamp: new Date(),
               isTyping: false,
             },
@@ -261,7 +256,7 @@ export function useChat() {
     (id: string) => {
       setConversations((prev) => prev.filter((c) => c.id !== id))
       if (activeConversationId === id) setActiveConversationId(null)
-      fetch(`/api/history/${USER_ID}/${id}`, { method: "DELETE" }).catch(() => {})
+      apiFetch(`/api/history/${id}`, { method: "DELETE" }).catch(() => {})
     },
     [activeConversationId],
   )

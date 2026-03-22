@@ -2,8 +2,10 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import json
+import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from langchain_core.messages import SystemMessage
 from langchain_core.messages.tool import ToolCall
 from utils.logger_handler import logger
@@ -11,26 +13,73 @@ from utils.logger_handler import logger
 
 _SLOW_TOOL_THRESHOLD = 15.0  # 超过此秒数打 WARNING
 
+# ── 线程本地 session_id，由 ReactAgent 在执行前设置 ──────────────────
+_session_ctx = threading.local()
+
+
+def set_current_session(session_id: Optional[str]) -> None:
+    """在当前线程绑定 session_id，供 monitor_tool 写 DB 时使用。"""
+    _session_ctx.id = session_id
+
+
+def get_current_session() -> Optional[str]:
+    return getattr(_session_ctx, "id", None)
+
+
+def _log_tool_call(
+    session_id: str,
+    tool_name: str,
+    tool_args: dict,
+    tool_output: str,
+    duration_ms: int,
+) -> None:
+    """将工具调用记录写入 tool_calls 表，失败时只打日志不影响主流程。"""
+    try:
+        from utils.db import get_conn
+        sql = """
+            INSERT INTO tool_calls
+                (session_id, tool_name, tool_input, tool_output, duration_ms, created_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+        """
+        input_str  = json.dumps(tool_args, ensure_ascii=False)[:2000]
+        output_str = tool_output[:2000]
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (session_id, tool_name, input_str, output_str, duration_ms))
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"[Tool DB] 写入 tool_calls 失败: {exc}")
+
+
 def monitor_tool(request: ToolCall, handler: Callable) -> Any:  # 工具执行监控
     """记录工具调用的名称、入参、输出及耗时，捕获并重抛异常。"""
-    tool_name = request.get("name", "unknown")
-    tool_args = request.get("args", {})
+    tool_name  = request.get("name", "unknown")
+    tool_args  = request.get("args", {})
+    session_id = get_current_session()
 
     logger.info(f"[Tool Call] 工具: {tool_name} | 参数: {tool_args}")
-    start = time.time()
+    start        = time.time()
+    elapsed_secs = 0.0
+    output_str   = ""
+
     try:
-        result = handler(request)
-        elapsed = time.time() - start
-        if elapsed > _SLOW_TOOL_THRESHOLD:
-            logger.warning(f"[Tool Slow] 工具: {tool_name} | 耗时: {elapsed:.2f}s（超过 {_SLOW_TOOL_THRESHOLD}s）")
+        result       = handler(request)
+        elapsed_secs = time.time() - start
+        output_str   = str(result)
+        if elapsed_secs > _SLOW_TOOL_THRESHOLD:
+            logger.warning(f"[Tool Slow] 工具: {tool_name} | 耗时: {elapsed_secs:.2f}s（超过 {_SLOW_TOOL_THRESHOLD}s）")
         else:
-            logger.info(f"[Tool Done] 工具: {tool_name} | 耗时: {elapsed:.2f}s")
+            logger.info(f"[Tool Done] 工具: {tool_name} | 耗时: {elapsed_secs:.2f}s")
         logger.debug(f"[Tool Result] {tool_name}: {result}")
         return result
     except Exception as e:
-        elapsed = time.time() - start
-        logger.error(f"[Tool Error] 工具: {tool_name} | 耗时: {elapsed:.2f}s | 错误: {e}")
+        elapsed_secs = time.time() - start
+        output_str   = f"ERROR: {e}"
+        logger.error(f"[Tool Error] 工具: {tool_name} | 耗时: {elapsed_secs:.2f}s | 错误: {e}")
         raise
+    finally:
+        if session_id:
+            _log_tool_call(session_id, tool_name, tool_args, output_str, int(elapsed_secs * 1000))
 
 
 def log_before_model(state: dict) -> dict:  # 模型执行前日志

@@ -9,6 +9,45 @@ from utils.path_tool import get_abs_path
 from utils.file_handler import load_document, list_md_files, list_pdf_files, list_txt_files, list_csv_files, get_file_md5_hex
 from utils.logger_handler import logger
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _rel(file_path: str) -> str:
+    """将绝对路径转为相对项目根目录的路径（最长 191 字符）。"""
+    try:
+        rel = os.path.relpath(file_path, _PROJECT_ROOT).replace("\\", "/")
+    except ValueError:
+        rel = file_path.replace("\\", "/")
+    return rel[:191]
+
+
+def _upsert_doc_record(file_path: str, md5_hash: str, chunk_count: int) -> None:
+    """在 knowledge_documents 表中插入或更新一条文档记录。"""
+    try:
+        from utils.db import get_conn
+        ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+        if ext not in ("md", "pdf", "txt", "csv"):
+            ext = "txt"
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else None
+        rel_path  = _rel(file_path)
+        sql = """
+            INSERT INTO knowledge_documents
+                (file_path, file_type, md5_hash, chunk_count, file_size, is_active, indexed_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, 1, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                md5_hash    = VALUES(md5_hash),
+                chunk_count = VALUES(chunk_count),
+                file_size   = VALUES(file_size),
+                is_active   = 1,
+                updated_at  = NOW()
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (rel_path, ext, md5_hash, chunk_count, file_size))
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"[知识库 DB] 记录文档失败: {exc}")
+
 
 class VectorStoreService:
     def __init__(self):
@@ -68,6 +107,7 @@ class VectorStoreService:
                 # 文档写入成功后才记录 MD5，防止崩溃导致重复加载
                 seen_md5.add(md5_hex)
                 new_md5s.append(md5_hex)
+                _upsert_doc_record(file_path, md5_hex, len(split_documents))
                 logger.info(f"[加载知识库] 已加载: {file_path}")
             except Exception as e:
                 logger.error(f"[加载知识库] 加载失败: {file_path} | {e}", exc_info=True)
@@ -96,6 +136,14 @@ class VectorStoreService:
         md5_path = get_abs_path(chroma_conf["md5_hex_store"])
         if os.path.exists(md5_path):
             os.remove(md5_path)
+        try:
+            from utils.db import get_conn
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM knowledge_documents")
+                conn.commit()
+        except Exception as exc:
+            logger.warning(f"[知识库 DB] 清空记录失败: {exc}")
         logger.info("[向量库] 已清空，MD5 记录已删除")
 
     def delete_docs_by_source(self, source_path: str) -> int:
@@ -104,6 +152,17 @@ class VectorStoreService:
         ids = results.get("ids", [])
         if ids:
             self.vector_store.delete(ids=ids)
+            try:
+                from utils.db import get_conn
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE knowledge_documents SET is_active = 0, updated_at = NOW() WHERE file_path = %s",
+                            (_rel(source_path),),
+                        )
+                    conn.commit()
+            except Exception as exc:
+                logger.warning(f"[知识库 DB] 更新文档状态失败: {exc}")
             logger.info(f"[向量库] 已删除 {len(ids)} 条文档，来源: {source_path}")
         return len(ids)
 
