@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.git
+.claude
+web/node_modules
+web/dist
+logs/*
+data/history/*
+rag/chroma_db/*
+*.log
+.env

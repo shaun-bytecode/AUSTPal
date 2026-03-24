@@ -1,0 +1,59 @@
+version: "3.8"
+
+services:
+  # ── MySQL ──
+  mysql:
+    image: mysql:8.0
+    container_name: austpal-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: austpal
+      MYSQL_CHARSET: utf8mb4
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend ──
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: austpal-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - MYSQL_HOST=mysql
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./rag/chroma_db:/app/rag/chroma_db
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+
+  # ── Frontend (nginx) ──
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: austpal-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  mysql_data:
